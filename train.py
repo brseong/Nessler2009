@@ -14,13 +14,26 @@ wandb.init(project="nessler2009")
 num_steps = 50
 population = 2
 num_epochs = 100
-batch_size = 32
+batch_size = 1
 num_workers = 4
-out_features = 10
+out_features = 2  # 10 classes default
+feature_map = {0: 0, 1: 3}
 learning_rate = 1e-1
-device = th.device("cuda" if th.cuda.is_available() else "cpu")
+device = th.device("cuda:2" if th.cuda.is_available() else "cpu")
 
-SpikeLoader = DataLoader[Dataset[UInt8[th.Tensor, "Population 28 28"]]]
+wandb.config.update(  # type: ignore
+    {
+        "num_steps": num_steps,
+        "population": population,
+        "num_epochs": num_epochs,
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "out_features": out_features,
+        "learning_rate": learning_rate,
+    }
+)
+
+SpikeLoader = DataLoader[Dataset[UInt8[th.Tensor, "Timesteps Population 28 28"]]]
 
 if __name__ == "__main__":
     th.no_grad()
@@ -36,24 +49,31 @@ if __name__ == "__main__":
 
     net = Nessler2009(28 * 28 * population, out_features, learning_rate).to(device)
     wandb.watch(net)  # type: ignore
-    try:
-        for epoch in range(num_epochs):
-            for i, (data, target) in tqdm(enumerate(iter(train_loader))):
-                data = data.view(batch_size, num_steps, -1).to(device)
-                target = target.to(device)
-                net(data)
-                if i % 10 == 0:
-                    for k in range(out_features):
-                        evidence = net.prob_z2k.view(population, 28, 28, out_features)[
-                            ..., k
-                        ]
-                        evidence = 0.5 + 0.5 * (evidence[1] - evidence[0])
-                        wandb.log(
-                            {
-                                f"prob_z2k_{k}": wandb.Image(evidence),
-                                f"prob_z_{k}": net.prob_z[k],
-                            }
-                        )
-    except AssertionError as e:
-        print(e)
-        pdb.set_trace()
+    for epoch in range(num_epochs):
+        data: UInt8[th.Tensor, "Batch Timesteps Population 28 28"]
+        for i, (data, target) in tqdm(enumerate(iter(train_loader))):
+            mask = th.zeros_like(target, dtype=th.bool)
+            for k, v in feature_map.items():
+                mask |= target == v
+            data = data[mask, :]
+            if data.shape[0] == 0:
+                continue
+            data = data.view(batch_size, num_steps, -1).to(device)
+            target = target.to(device)
+            net(data)
+            if i % 10 == 0:
+                for k in range(out_features):
+                    evidence = net.prob_z2k[:, k]
+                    # img = th.zeros((28, 28)).to(device)
+                    # for j in range(population):
+                    #     img += j / (population - 1) * evidence[j]
+                    wandb.log(
+                        {
+                            f"img": wandb.Image(
+                                data[0].sum(dim=0).view(2 * 28, 28).float()
+                            ),
+                            # f"prob_z2k_{k}": wandb.Image(img),
+                            f"prob_z2k_{k}": wandb.Image(evidence.view(2 * 28, 28)),
+                            f"prob_z_{k}": net.prob_z[k],
+                        }
+                    )

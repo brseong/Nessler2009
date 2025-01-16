@@ -21,8 +21,8 @@ class Nessler2009(Module):
         self.lr_decay_inverse = 1
         self.time_window = 10
 
-        prob_z2k = th.rand((in_features, out_features))
-        prob_z = th.rand((out_features))
+        prob_z2k = 0.5 + 0.25 * th.rand((in_features, out_features))
+        prob_z = 0.5 + 0.25 * th.rand((out_features))
         self.register_buffer("prob_z2k", prob_z2k)
         self.register_buffer("prob_z", prob_z)
 
@@ -30,7 +30,6 @@ class Nessler2009(Module):
         assert len(x.shape) == 3, (
             "Input shape must be (Batch, Timesteps, Population*28*28)"
         )
-        # self.last_input = x
         x_windowed = x[...]
         for t in range(1, self.time_window):
             x_windowed[:, t:, :] = x_windowed[:, t:, :] + x[:, :-t, :]
@@ -43,7 +42,7 @@ class Nessler2009(Module):
         for t in range(x.shape[1]):
             step_spike = x[:, t, :]
             bayes_prob = (
-                th.exp(step_spike.float()) @ self.prob_z2k * self.prob_z
+                th.exp(step_spike.float() @ th.log(self.prob_z2k)) * self.prob_z
             )  # (Batch, out_features)
             winners = bayes_prob.softmax(dim=1).multinomial(1).view(x.shape[0])
             winners = th.nn.functional.one_hot(winners, self.out_featuers).to(
