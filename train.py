@@ -18,7 +18,7 @@ batch_size = 1
 num_workers = 4
 out_features = 2  # 10 classes default
 feature_map = {0: 0, 1: 3}
-learning_rate = 1e-1
+learning_rate = 1e-3
 device = th.device("cuda:2" if th.cuda.is_available() else "cpu")
 
 wandb.config.update(  # type: ignore
