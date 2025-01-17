@@ -13,10 +13,12 @@ class Nessler2009(Module):
     "Probability of the input spike given the latent variable, shape of: (populations * in_features, out_features)"
     log_prior: Float64[th.Tensor, "out_features"]  # noqa: F821
     "Marginal probability of the latent variable, shape of: (out_features, )"
-    trace_pre: Int[th.Tensor, "Batch in_features"]
-    "Last time the input neuron spiked"
-    trace_post: Int[th.Tensor, "Batch out_features"]
-    "Last time the latent neuron spiked"
+    trace_pre_ltp: UInt8[th.Tensor, "Batch Timesteps in_features"]
+    "Trace of LTP in presynaptic spike. type: UInt8[th.Tensor, 'Batch Timesteps in_features']"
+    trace_pre_ltd: UInt8[th.Tensor, "Batch Timesteps in_features"]
+    "Trace of LTD in presynaptic spike. type: UInt8[th.Tensor, 'Batch Timesteps in_features']"
+    trace_post: UInt8[th.Tensor, "Batch Timesteps out_features"]
+    "Trace of LTP in postsynaptic spike. type: UInt8[th.Tensor, 'Batch Timesteps out_features']"
 
     def __init__(
         self,
@@ -31,7 +33,7 @@ class Nessler2009(Module):
         self.in_features = in_features
         self.out_features = out_features
         self.learning_rate = learning_rate
-        self.lr_decay_inverse = 1
+        self.inverse_lr_decay = 1
         "To garantee the convergence of the algorithm"
         self.populations = populations
         "Number of populations for population coding"
@@ -62,13 +64,15 @@ class Nessler2009(Module):
         potential = potential.to(th.uint8)
 
         # To save the timings of the last spike for STDP
-        self.trace_pre = th.full(
-            (batch, in_features), -num_steps, dtype=th.int, device=x.device
+        self.trace_pre_ltp = th.zeros(
+            (batch, num_steps, in_features), dtype=th.uint8, device=x.device
         )
-        self.trace_post = th.full(
-            (batch, self.out_features),
-            th.iinfo(th.int).max,
-            dtype=th.int,
+        self.trace_pre_ltd = th.zeros(
+            (batch, num_steps, in_features), dtype=th.uint8, device=x.device
+        )
+        self.trace_post = th.zeros(
+            (batch, num_steps, self.out_features),
+            dtype=th.uint8,
             device=x.device,
         )
 
@@ -83,31 +87,39 @@ class Nessler2009(Module):
             winners = th.nn.functional.one_hot(winners, self.out_features).to(
                 th.uint8
             )  # (Batch, out_features)
-            self.trace_pre -= 1
-            self.trace_pre[x[:, t, :].bool()] = 0
-            self.trace_post -= 1
-            self.trace_post[winners.bool()] = 0
-            self.STDP(potential_t, winners)
+            # self.trace_pre -= 1
+            # self.trace_pre[x[:, t, :].bool()] = 0
+            # self.trace_post -= 1
+            # self.trace_post[winners.bool()] = 0
+            self.trace_pre_ltp[:, t : t + self.sigma, :] = (
+                self.trace_pre_ltp[:, t : t + self.sigma, :] + x[:, t : t + 1, :]
+            )  # (Batch, sigma, in_features). Broadcast the spike through the time dimension
+            self.trace_pre_ltd[:, t + self.sigma :, :] = (
+                self.trace_pre_ltd[:, t + self.sigma :, :] + x[:, t : t + 1, :]
+            )
+            self.trace_post[:, t:, :] = self.trace_post[:, t:, :] + winners.unsqueeze(1)
+            self.STDP(x[:, t, :], winners, t)
 
     def STDP(
         self,
-        potential: UInt8[th.Tensor, "Batch in_features"],
-        winners: UInt8[th.Tensor, "Batch out_features"],
+        pre_spikes: UInt8[th.Tensor, "Batch in_features"],
+        post_spikes: UInt8[th.Tensor, "Batch out_features"],
+        t: int,
     ) -> None:
-        potential = potential.double()
-        winners = winners.double()
-
+        pre_spikes = pre_spikes.double()
+        post_spikes = post_spikes.double()
+        # pdb.set_trace()
         # The cases when the input neuron spikes before the latent neuron
         post_pre_LTP = (
-            (self.trace_pre >= -self.sigma).double()  # LTP condition
-        ).unsqueeze(-1) @ winners.unsqueeze(1)  # (Batch, in_features, out_features)
+            self.trace_pre_ltp[:, t, :].double()  # LTP condition
+        ).unsqueeze(-1) @ post_spikes.unsqueeze(1)  # (Batch, in_features, out_features)
         post_pre_LTD = (
-            -(self.trace_pre < -self.sigma).double()  # LTD condition
-        ).unsqueeze(-1) @ winners.unsqueeze(1)  # (Batch, in_features, out_features)
+            -self.trace_pre_ltd[:, t, :].double()  # LTD condition
+        ).unsqueeze(-1) @ post_spikes.unsqueeze(1)  # (Batch, in_features, out_features)
 
         # The case when the input neuron spikes after the latent neuron
-        pre_post = potential.unsqueeze(-1) @ (
-            self.trace_post < 0  # LTD condition
+        pre_post = pre_spikes.unsqueeze(-1) @ (
+            self.trace_post[:, t, :]  # LTD condition
         ).double().unsqueeze(1)  # (Batch, in_features, out_features)
 
         dw = (
@@ -117,20 +129,19 @@ class Nessler2009(Module):
                 - pre_post.mean(dim=0)
             )
             * self.learning_rate
-            / self.lr_decay_inverse
+            / self.inverse_lr_decay
         )  # (in_features, out_features)
         self.log_likelihood += dw
-        # to constrain the weights to be positive. (positive weights would be normalized in normalize_probs)
 
         db = (
             (
-                (5 * (-self.log_prior) - 1) * winners.mean(dim=0)
-                - (1 - winners.mean(dim=0))
+                (5 * (-self.log_prior).exp() - 1) * post_spikes.mean(dim=0)
+                - (1 - post_spikes.mean(dim=0))
             )
             * self.learning_rate
-            / self.lr_decay_inverse
+            / self.inverse_lr_decay
         )
-        self.log_prior += db  # to constrain the weights to be positive. (positive weights would be normalized in normalize_probs)
+        self.log_prior += db
 
         wandb.log(
             {
@@ -139,12 +150,12 @@ class Nessler2009(Module):
             }
         )
 
-        self.lr_decay_inverse += 1
+        self.inverse_lr_decay += 1
         self.normalize_probs()
 
     def normalize_probs(self) -> None:
-        """Normalize over in_features, to satisfy the constraint that the sum of the weights to each output neuron is 1.
-        (the weights is prob of the input spike given the latent variable)"""
+        """Normalize over in_features, to satisfy the constraint that the sum of the probs to each output neuron is 1.
+        (the weights is log prob of the input spike given the latent variable)"""
         self.log_likelihood.clamp_(min=-5, max=0)
         population_form = self.log_likelihood.view(
             self.populations, -1, self.out_features

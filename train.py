@@ -11,13 +11,13 @@ import wandb
 
 num_steps = 50
 populations = 2
-num_epochs = 2
+num_epochs = 1
 batch_size = 1
 num_workers = 4
 feature_map = [0, 3]
 # feature_map = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 out_features = len(feature_map)  # 10 classes default
-learning_rate = 1e-1
+learning_rate = 1e0
 device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
 
 wandb.init(
@@ -74,10 +74,13 @@ if __name__ == "__main__":
 
                     wandb.log(
                         {
+                            # f"likelihood_{k}": wandb.Image(
+                            #     decode_population(
+                            #         likelihood_k.exp().view(populations, 28, 28)
+                            #     )
+                            # ),
                             f"likelihood_{k}": wandb.Image(
-                                decode_population(
-                                    likelihood_k.exp().view(populations, 28, 28)
-                                )
+                                likelihood_k.exp().view(2 * 28, 28)
                             ),
                             f"prior_{k}": net.log_prior[k].exp(),
                         }
