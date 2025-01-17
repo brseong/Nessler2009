@@ -39,9 +39,9 @@ class Nessler2009(Module):
         "Time window for membrane potential and STDP"
         self.dtype = dtype
 
-        log_likelihood = th.rand((in_features, out_features), dtype=dtype) * -5
+        log_likelihood = th.rand((in_features, out_features), dtype=dtype) * -1 - 1
         # likelihood = th.full((in_features, out_features), 0.5, dtype=th.float64)
-        log_prior = th.rand((out_features,), dtype=dtype) * -5
+        log_prior = th.rand((out_features,), dtype=dtype) * -1 - 1
         # prior = th.full((out_features,), 0.5, dtype=th.float64)
         self.register_buffer("log_likelihood", log_likelihood)
         self.register_buffer("log_prior", log_prior)
@@ -133,4 +133,13 @@ class Nessler2009(Module):
         """Normalize over in_features, to satisfy the constraint that the sum of the weights to each output neuron is 1.
         (the weights is prob of the input spike given the latent variable)"""
         self.log_likelihood.clamp_(min=-5, max=0)
+        population_form = self.log_likelihood.view(
+            self.populations, -1, self.out_features
+        )
+        self.log_likelihood -= (
+            population_form.logsumexp(dim=0, keepdim=True)
+            .view(-1, self.out_features)
+            .repeat(2, 1)
+        )
         self.log_prior.clamp_(min=-5, max=0)
+        self.log_prior -= self.log_prior.logsumexp(dim=0, keepdim=True)
