@@ -17,7 +17,7 @@ num_workers = 4
 feature_map = [0, 3]
 # feature_map = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 out_features = len(feature_map)  # 10 classes default
-learning_rate = 1e0
+learning_rate = 1e1
 device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
 
 wandb.init(
@@ -70,17 +70,14 @@ if __name__ == "__main__":
                 #     }
                 # )
                 for k in range(out_features):
-                    likelihood_k = net.log_likelihood[:, k]
+                    log_likelihood_k = net.log_likelihood[:, k]
 
                     wandb.log(
                         {
-                            # f"likelihood_{k}": wandb.Image(
-                            #     decode_population(
-                            #         likelihood_k.exp().view(populations, 28, 28)
-                            #     )
-                            # ),
                             f"likelihood_{k}": wandb.Image(
-                                likelihood_k.exp().view(2 * 28, 28)
+                                decode_population(
+                                    log_likelihood_k.exp().view(populations, 28, 28)
+                                )
                             ),
                             f"prior_{k}": net.log_prior[k].exp(),
                         }

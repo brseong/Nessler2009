@@ -75,6 +75,11 @@ class Nessler2009(Module):
             dtype=th.uint8,
             device=x.device,
         )
+        self.trace_oow = th.zeros(
+            (batch, num_steps, self.out_features),
+            dtype=th.uint8,
+            device=x.device,
+        )
 
         for t in range(potential.shape[1]):
             potential_t = potential[:, t, :]  # (Batch, in_features)
@@ -87,17 +92,18 @@ class Nessler2009(Module):
             winners = th.nn.functional.one_hot(winners, self.out_features).to(
                 th.uint8
             )  # (Batch, out_features)
-            # self.trace_pre -= 1
-            # self.trace_pre[x[:, t, :].bool()] = 0
-            # self.trace_post -= 1
-            # self.trace_post[winners.bool()] = 0
-            self.trace_pre_ltp[:, t : t + self.sigma, :] = (
-                self.trace_pre_ltp[:, t : t + self.sigma, :] + x[:, t : t + 1, :]
-            )  # (Batch, sigma, in_features). Broadcast the spike through the time dimension
-            self.trace_pre_ltd[:, t + self.sigma :, :] = (
-                self.trace_pre_ltd[:, t + self.sigma :, :] + x[:, t : t + 1, :]
+            self.trace_pre_ltp[:, t : t + self.sigma, :] += x[
+                :, t : t + 1, :
+            ]  # (Batch, sigma, in_features). Broadcast the spike through the time dimension
+            self.trace_pre_ltd[:, t + self.sigma :, :] += x[:, t : t + 1, :]
+
+            self.trace_post[:, t + 1 : t + 1 + 2 * self.sigma, :] += winners.unsqueeze(
+                1
             )
-            self.trace_post[:, t:, :] = self.trace_post[:, t:, :] + winners.unsqueeze(1)
+            self.trace_oow[:, t + 1 + 2 * self.sigma : t + 2 + 2 * self.sigma, :] += (
+                winners.unsqueeze(1)
+            )
+
             self.STDP(x[:, t, :], winners, t)
 
     def STDP(
@@ -108,13 +114,12 @@ class Nessler2009(Module):
     ) -> None:
         pre_spikes = pre_spikes.double()
         post_spikes = post_spikes.double()
-        # pdb.set_trace()
         # The cases when the input neuron spikes before the latent neuron
         post_pre_LTP = (
             self.trace_pre_ltp[:, t, :].double()  # LTP condition
         ).unsqueeze(-1) @ post_spikes.unsqueeze(1)  # (Batch, in_features, out_features)
         post_pre_LTD = (
-            -self.trace_pre_ltd[:, t, :].double()  # LTD condition
+            self.trace_pre_ltd[:, t, :].double()  # LTD condition
         ).unsqueeze(-1) @ post_spikes.unsqueeze(1)  # (Batch, in_features, out_features)
 
         # The case when the input neuron spikes after the latent neuron
@@ -122,11 +127,22 @@ class Nessler2009(Module):
             self.trace_post[:, t, :]  # LTD condition
         ).double().unsqueeze(1)  # (Batch, in_features, out_features)
 
+        # The case that the input neuron never spikes, but only the latent neuron spikes
+        out_of_window = (
+            1
+            - self.trace_pre_ltp[:, -3 * self.sigma : t, :]
+            .any(dim=1)  # If there is no spike in the last 3 sigma
+            .double()
+        ).unsqueeze(-1) @ (
+            self.trace_oow[:, t, :]  # LTD condition
+        ).double().unsqueeze(1)
+
         dw = (
             (
                 (5 * (-self.log_likelihood).exp() - 1) * post_pre_LTP.mean(dim=0)
                 - post_pre_LTD.mean(dim=0)
                 - pre_post.mean(dim=0)
+                - out_of_window.mean(dim=0)
             )
             * self.learning_rate
             / self.inverse_lr_decay
