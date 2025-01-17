@@ -111,20 +111,33 @@ class Nessler2009(Module):
         ).double().unsqueeze(1)  # (Batch, in_features, out_features)
 
         dw = (
-            (5 * (-self.log_likelihood).exp() - 1) * post_pre_LTP.mean(dim=0)
-            - post_pre_LTD.mean(dim=0)
-            - pre_post.mean(dim=0)
+            (
+                (5 * (-self.log_likelihood).exp() - 1) * post_pre_LTP.mean(dim=0)
+                - post_pre_LTD.mean(dim=0)
+                - pre_post.mean(dim=0)
+            )
+            * self.learning_rate
+            / self.lr_decay_inverse
         )  # (in_features, out_features)
-        self.log_likelihood += (
-            self.learning_rate / (self.lr_decay_inverse) * dw
-        )  # to constrain the weights to be positive. (positive weights would be normalized in normalize_probs)
+        self.log_likelihood += dw
+        # to constrain the weights to be positive. (positive weights would be normalized in normalize_probs)
 
-        db = (5 * (-self.log_prior) - 1) * winners.mean(dim=0) - (
-            1 - winners.mean(dim=0)
+        db = (
+            (
+                (5 * (-self.log_prior) - 1) * winners.mean(dim=0)
+                - (1 - winners.mean(dim=0))
+            )
+            * self.learning_rate
+            / self.lr_decay_inverse
         )
-        self.log_prior += (
-            self.learning_rate / (self.lr_decay_inverse) * db
-        )  # to constrain the weights to be positive. (positive weights would be normalized in normalize_probs)
+        self.log_prior += db  # to constrain the weights to be positive. (positive weights would be normalized in normalize_probs)
+
+        wandb.log(
+            {
+                "dw": dw.norm().item(),
+                "db": db.norm().item(),
+            }
+        )
 
         self.lr_decay_inverse += 1
         self.normalize_probs()
