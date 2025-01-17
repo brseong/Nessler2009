@@ -12,7 +12,7 @@ def poisson_spike_per_cls(
     num_steps: int = 50,
     prob: float = 4e-2,
     population: int = 2,
-) -> UInt8[th.Tensor, "Timesteps Pop 28 28"]:
+) -> UInt8[th.Tensor, "Num_steps Num_Population 28 28"]:
     """Generate Poisson spikes for each class in the input tensor. Only one class is active for the series of spikes.
 
     Returns:
@@ -33,7 +33,7 @@ def poisson_spike_per_cls(
 
 def encode_data(
     x: Image | th.Tensor, num_steps: int = 50, population: int = 2
-) -> UInt8[th.Tensor, "Timesteps Population 28 28"]:
+) -> UInt8[th.Tensor, "Num_steps Num_Population 28 28"]:
     if not isinstance(x, th.Tensor):
         x = to_tensor(x)
     x *= population  # (1, 28, 28)
@@ -50,3 +50,15 @@ if __name__ == "__main__":
     mnist = MNIST("../", download=True, transform=encode_data)
     y = mnist[0][0]
     pdb.set_trace()
+
+
+def decode_population(
+    x: UInt8[th.Tensor, "Num_Population 28 28"],
+) -> th.Tensor:
+    x = x.float()
+    num_population, *feature_shape = x.shape
+    device = x.device
+    img = th.zeros(feature_shape).to(device)
+    for j in range(num_population):
+        img += j / (num_population - 1) * x[j]
+    return img
