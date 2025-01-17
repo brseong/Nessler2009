@@ -12,7 +12,7 @@ def poisson_spike_per_cls(
     num_steps: int = 50,
     prob: float = 4e-2,
     population: int = 2,
-) -> UInt8[th.Tensor, "Num_steps Num_Population 28 28"]:
+) -> UInt8[th.Tensor, "Num_steps Populations 28 28"]:
     """Generate Poisson spikes for each class in the input tensor. Only one class is active for the series of spikes.
 
     Returns:
@@ -33,7 +33,12 @@ def poisson_spike_per_cls(
 
 def encode_data(
     x: Image | th.Tensor, num_steps: int = 50, population: int = 2
-) -> UInt8[th.Tensor, "Num_steps Num_Population 28 28"]:
+) -> UInt8[th.Tensor, "Num_steps Populations 28 28"]:
+    """Encode data into Poisson spikes, where each pixel is represented by a population of neurons.
+
+    Returns:
+        _type_: _description_
+    """
     if not isinstance(x, th.Tensor):
         x = to_tensor(x)
     x *= population  # (1, 28, 28)
@@ -44,21 +49,26 @@ def encode_data(
     return poisson_spike_per_cls(x, num_steps=num_steps, population=population)
 
 
+def decode_population(
+    x: UInt8[th.Tensor, "Populations 28 28"],
+) -> Float[th.Tensor, "28 28"]:
+    """Integrate the population of each group to make a single value of pixel intensity.
+
+    Returns:
+        Float[th.Tensor, "28 28"]: Image tensor of shape (28, 28)
+    """
+    x = x.float()
+    Populations, *feature_shape = x.shape
+    device = x.device
+    img = th.zeros(feature_shape).to(device)
+    for j in range(Populations):
+        img += j / (Populations - 1) * x[j]
+    return img
+
+
 if __name__ == "__main__":
     from torchvision.datasets import MNIST  # type: ignore
 
     mnist = MNIST("../", download=True, transform=encode_data)
     y = mnist[0][0]
     pdb.set_trace()
-
-
-def decode_population(
-    x: UInt8[th.Tensor, "Num_Population 28 28"],
-) -> th.Tensor:
-    x = x.float()
-    num_population, *feature_shape = x.shape
-    device = x.device
-    img = th.zeros(feature_shape).to(device)
-    for j in range(num_population):
-        img += j / (num_population - 1) * x[j]
-    return img
