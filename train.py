@@ -18,8 +18,8 @@ feature_map = [0, 3]
 # feature_map = [0, 3, 4]
 # feature_map = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 out_features = len(feature_map)  # 10 classes default
-learning_rate = 1e1
-device = th.device("cuda:1" if th.cuda.is_available() else "cpu")
+learning_rate = 1e0
+device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
 
 wandb.init(
     project="nessler2009",
