@@ -39,6 +39,8 @@ class Nessler2009(Module):
         "Number of populations for population coding"
         self.sigma = 10
         "Time window for membrane potential and STDP"
+        self.ltp_constant = 1
+        "Constant for the LTP rule"
         self.dtype = dtype
 
         log_likelihood = th.rand((in_features, out_features), dtype=dtype) * -1 - 1
@@ -86,17 +88,26 @@ class Nessler2009(Module):
         pred = th.zeros(
             (batch, num_steps, self.out_features), dtype=th.int, device=x.device
         )
+        z_total = 0
         for t in range(potential.shape[1]):
             potential_t = potential[:, t, :]  # (Batch, in_features)
             posterior = th.exp(
                 potential_t.double() @ self.log_likelihood + self.log_prior
-            )  # (Batch, out_features)
-            winners = (
-                posterior.softmax(dim=1).multinomial(1).view(potential_t.shape[0])
-            )  # (Batch, )
-            winners = th.nn.functional.one_hot(winners, self.out_features).to(
-                th.uint8
-            )  # (Batch, out_features)
+            ).softmax(dim=1)  # (Batch, out_features)
+            # winners = (
+            #     posterior.softmax(dim=1).multinomial(1).view(potential_t.shape[0])
+            # )  # (Batch, )
+            winners = posterior.bernoulli_()
+            for row in winners:
+                if row.sum() != 0:
+                    row[:] = th.nn.functional.one_hot(
+                        row.softmax(dim=0).multinomial(1), self.out_features
+                    )
+            winners = winners.to(th.uint8)
+
+            # winners = th.nn.functional.one_hot(winners, self.out_features).to(
+            #     th.uint8
+            # )  # (Batch, out_features)
             self.trace_pre_sigma[:, t : t + self.sigma, :] += x[
                 :, t : t + 1, :
             ]  # (Batch, sigma, in_features). Broadcast the spike through the time dimension
@@ -127,26 +138,25 @@ class Nessler2009(Module):
         pre_spikes = pre_spikes.double()
         post_spikes = post_spikes.double()
         # The cases when the input neuron spikes before the latent neuron
-        pre_post_ltp = (
-            self.trace_pre_sigma[:, t, :].double()  # LTP condition
-        ).unsqueeze(-1) @ post_spikes.unsqueeze(1)  # (Batch, in_features, out_features)
-        pre_post_ltd = (
-            self.trace_pre_sigma2inf[:, t, :].double()  # LTD condition
-        ).unsqueeze(-1) @ post_spikes.unsqueeze(1)  # (Batch, in_features, out_features)
+        pre_post_ltp = self.trace_pre_sigma[:, t, :].double().unsqueeze(
+            -1
+        ) @ post_spikes.unsqueeze(1)  # (Batch, in_features, out_features)
+        pre_post_ltd = self.trace_pre_sigma2inf[:, t, :].double().unsqueeze(
+            -1
+        ) @ post_spikes.unsqueeze(1)  # (Batch, in_features, out_features)
 
         # The case when the input neuron spikes  after the latent neuron
-        post_pre_spk = (pre_spikes).unsqueeze(-1) @ (
-            self.trace_post_2sigma[:, t, :]  # LTD condition
-        ).double().unsqueeze(1)  # (Batch, in_features, out_features)
+        post_pre = pre_spikes.unsqueeze(-1) @ self.trace_post_2sigma[
+            :, t, :
+        ].double().unsqueeze(1)  # (Batch, in_features, out_features)
 
         # The case when the input neuron does not spike after the latent neuron
-        post_pre_no_spk = (
-            self.trace_pre_2sigma[:, t + 1 - 2 * self.sigma : t + 1, :].sum(dim=1)
-            == 0  # If there is no spike in the time window
+        post_only = (
+            # If the input neuron does not spike in the time window
+            self.trace_pre_2sigma[:, t + 1 - 2 * self.sigma : t + 1, :].sum(dim=1) == 0
         ).double().unsqueeze(-1) @ (
-            self.trace_post_2sigma[
-                :, t, :
-            ]  # last spike of the latent neuron before the time window
+            # If the latent neuron spikes in the time window
+            self.trace_post_2sigma2inf[:, t, :]
         ).double().unsqueeze(1)
 
         # print(
@@ -159,10 +169,11 @@ class Nessler2009(Module):
 
         dw = (
             (
-                (5 * (-self.log_likelihood).exp() - 1) * pre_post_ltp.sum(dim=0)
+                (self.ltp_constant * (-self.log_likelihood).exp() - 1)
+                * pre_post_ltp.sum(dim=0)
                 - pre_post_ltd.sum(dim=0)
-                - post_pre_spk.sum(dim=0)
-                - post_pre_no_spk.sum(dim=0)
+                - post_pre.sum(dim=0)
+                - post_only.sum(dim=0)
             )
             * self.learning_rate
             / self.inverse_lr_decay
@@ -171,7 +182,8 @@ class Nessler2009(Module):
 
         db = (
             (
-                (5 * (-self.log_prior).exp() - 1) * post_spikes.sum(dim=0)
+                (self.ltp_constant * (-self.log_prior).exp() - 1)
+                * post_spikes.sum(dim=0)
                 - (1 - post_spikes.sum(dim=0))
             )
             * self.learning_rate
@@ -192,12 +204,12 @@ class Nessler2009(Module):
     def normalize_probs(self) -> None:
         """Normalize over in_features, to satisfy the constraint that the sum of the probs to each output neuron is 1.
         (the weights is log prob of the input spike given the latent variable)"""
-        self.log_likelihood.clamp_(min=-5, max=0)
+        self.log_likelihood.clamp_(min=-7, max=0)
         population_form = self.log_likelihood.view(
             self.populations, -1, self.out_features
         )
         self.log_likelihood = (
             population_form - population_form.logsumexp(dim=0, keepdim=True)
         ).view(*self.log_likelihood.shape)
-        self.log_prior.clamp_(min=-5, max=0)
+        self.log_prior.clamp_(min=-7, max=0)
         self.log_prior -= self.log_prior.logsumexp(dim=0)

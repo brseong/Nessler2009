@@ -11,10 +11,11 @@ import wandb
 
 num_steps = 50
 populations = 2
-num_epochs = 100
+num_epochs = 1
 batch_size = 1
 num_workers = 4
 feature_map = [0, 3]
+# feature_map = [0, 3, 4]
 # feature_map = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 out_features = len(feature_map)  # 10 classes default
 learning_rate = 1e1
@@ -47,7 +48,9 @@ if __name__ == "__main__":
         data_test, batch_size=batch_size, shuffle=False, num_workers=num_workers
     )
 
-    net = Nessler2009(28 * 28 * populations, out_features, learning_rate).to(device)
+    net = Nessler2009(
+        28 * 28 * populations, out_features, learning_rate, populations
+    ).to(device)
     wandb.watch(net)  # type: ignore
 
     ewma = 0.5  # To inspect the clustering of the likelihoods
@@ -78,11 +81,11 @@ if __name__ == "__main__":
 
                     wandb.log(
                         {
-                            f"likelihood_{k}": wandb.Image(
+                            f"p(y|z_{k}=1)": wandb.Image(
                                 decode_population(
                                     log_likelihood_k.exp().view(populations, 28, 28)
                                 )
                             ),
-                            f"prior_{k}": net.log_prior[k].exp(),
+                            f"p(z_{k}=1)": net.log_prior[k].exp(),
                         }
                     )
