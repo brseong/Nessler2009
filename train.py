@@ -11,7 +11,7 @@ import wandb
 
 num_steps = 50
 populations = 2
-num_epochs = 1
+num_epochs = 100
 batch_size = 1
 num_workers = 4
 feature_map = [0, 3]
@@ -49,6 +49,8 @@ if __name__ == "__main__":
 
     net = Nessler2009(28 * 28 * populations, out_features, learning_rate).to(device)
     wandb.watch(net)  # type: ignore
+
+    ewma = 0.5  # To inspect the clustering of the likelihoods
     for epoch in range(num_epochs):
         data: UInt8[th.Tensor, "Batch Timesteps Population 28 28"]
         for i, (data, target) in tqdm(enumerate(iter(train_loader))):
@@ -60,14 +62,16 @@ if __name__ == "__main__":
                 continue
             data = data.view(batch_size, num_steps, -1).to(device)
             target = target.to(device)
-            net(data)
+            pred = net(data)
+            ewma = ewma * 0.99 + (target / 3 - pred.float()).abs().mean().item() * 0.01
+            wandb.log({"target-pred": ewma})
             if i % 10 == 0:
                 # wandb.log(
                 #     {
                 #         f"img": wandb.Image(
                 #             decode_population(data[0].sum(dim=0).view(2, 28, 28))
                 #         ),
-                #     }
+                #     }0
                 # )
                 for k in range(out_features):
                     log_likelihood_k = net.log_likelihood[:, k]

@@ -13,11 +13,11 @@ class Nessler2009(Module):
     "Probability of the input spike given the latent variable, shape of: (populations * in_features, out_features)"
     log_prior: Float64[th.Tensor, "out_features"]  # noqa: F821
     "Marginal probability of the latent variable, shape of: (out_features, )"
-    trace_pre_ltp: UInt8[th.Tensor, "Batch Timesteps in_features"]
+    trace_pre_sigma: UInt8[th.Tensor, "Batch Timesteps in_features"]
     "Trace of LTP in presynaptic spike. type: UInt8[th.Tensor, 'Batch Timesteps in_features']"
-    trace_pre_ltd: UInt8[th.Tensor, "Batch Timesteps in_features"]
+    trace_pre_sigma2inf: UInt8[th.Tensor, "Batch Timesteps in_features"]
     "Trace of LTD in presynaptic spike. type: UInt8[th.Tensor, 'Batch Timesteps in_features']"
-    trace_post: UInt8[th.Tensor, "Batch Timesteps out_features"]
+    trace_post_2sigma: UInt8[th.Tensor, "Batch Timesteps out_features"]
     "Trace of LTP in postsynaptic spike. type: UInt8[th.Tensor, 'Batch Timesteps out_features']"
 
     def __init__(
@@ -51,7 +51,7 @@ class Nessler2009(Module):
 
     def forward(
         self, x: UInt8[th.Tensor, "Batch Num_steps Num_Population*28*28"]
-    ) -> None:
+    ) -> int:
         assert len(x.shape) == 3, (
             "Input shape must be (Batch, Num_steps, Num_Population*28*28)"
         )
@@ -64,23 +64,28 @@ class Nessler2009(Module):
         potential = potential.to(th.uint8)
 
         # To save the timings of the last spike for STDP
-        self.trace_pre_ltp = th.zeros(
+        self.trace_pre_sigma = th.zeros(
             (batch, num_steps, in_features), dtype=th.uint8, device=x.device
         )
-        self.trace_pre_ltd = th.zeros(
+        self.trace_pre_sigma2inf = th.zeros(
             (batch, num_steps, in_features), dtype=th.uint8, device=x.device
         )
-        self.trace_post = th.zeros(
+        self.trace_pre_2sigma = th.zeros(
+            (batch, num_steps, in_features), dtype=th.uint8, device=x.device
+        )
+        self.trace_post_2sigma = th.zeros(
             (batch, num_steps, self.out_features),
             dtype=th.uint8,
             device=x.device,
         )
-        self.trace_oow = th.zeros(
+        self.trace_post_2sigma2inf = th.zeros(
             (batch, num_steps, self.out_features),
             dtype=th.uint8,
             device=x.device,
         )
-
+        pred = th.zeros(
+            (batch, num_steps, self.out_features), dtype=th.int, device=x.device
+        )
         for t in range(potential.shape[1]):
             potential_t = potential[:, t, :]  # (Batch, in_features)
             posterior = th.exp(
@@ -92,19 +97,26 @@ class Nessler2009(Module):
             winners = th.nn.functional.one_hot(winners, self.out_features).to(
                 th.uint8
             )  # (Batch, out_features)
-            self.trace_pre_ltp[:, t : t + self.sigma, :] += x[
+            self.trace_pre_sigma[:, t : t + self.sigma, :] += x[
                 :, t : t + 1, :
             ]  # (Batch, sigma, in_features). Broadcast the spike through the time dimension
-            self.trace_pre_ltd[:, t + self.sigma :, :] += x[:, t : t + 1, :]
+            self.trace_pre_sigma2inf[:, t + self.sigma :, :] += x[:, t : t + 1, :]
 
-            self.trace_post[:, t + 1 : t + 1 + 2 * self.sigma, :] += winners.unsqueeze(
-                1
+            self.trace_pre_2sigma[:, t + 1 : t + 1 + 2 * self.sigma, :] += x[
+                :, t : t + 1, :
+            ]
+            self.trace_post_2sigma[:, t + 1 : t + 1 + 2 * self.sigma, :] += (
+                winners.unsqueeze(1)
             )
-            self.trace_oow[:, t + 1 + 2 * self.sigma : t + 2 + 2 * self.sigma, :] += (
+            self.trace_post_2sigma2inf[:, t + 1 + 2 * self.sigma :, :] += (
                 winners.unsqueeze(1)
             )
 
             self.STDP(x[:, t, :], winners, t)
+            pred[:, t, :] = winners
+        # for t in range(potential.shape[1], potential.shape[1] + self.sigma):
+        #     self.STDP(th.zeros_like(x[:, -1, :]), th.zeros_like(winners), t)
+        return pred.sum(dim=1).argmax(dim=1)
 
     def STDP(
         self,
@@ -115,34 +127,42 @@ class Nessler2009(Module):
         pre_spikes = pre_spikes.double()
         post_spikes = post_spikes.double()
         # The cases when the input neuron spikes before the latent neuron
-        post_pre_LTP = (
-            self.trace_pre_ltp[:, t, :].double()  # LTP condition
+        pre_post_ltp = (
+            self.trace_pre_sigma[:, t, :].double()  # LTP condition
         ).unsqueeze(-1) @ post_spikes.unsqueeze(1)  # (Batch, in_features, out_features)
-        post_pre_LTD = (
-            self.trace_pre_ltd[:, t, :].double()  # LTD condition
+        pre_post_ltd = (
+            self.trace_pre_sigma2inf[:, t, :].double()  # LTD condition
         ).unsqueeze(-1) @ post_spikes.unsqueeze(1)  # (Batch, in_features, out_features)
 
-        # The case when the input neuron spikes after the latent neuron
-        pre_post = pre_spikes.unsqueeze(-1) @ (
-            self.trace_post[:, t, :]  # LTD condition
+        # The case when the input neuron spikes  after the latent neuron
+        post_pre_spk = (pre_spikes).unsqueeze(-1) @ (
+            self.trace_post_2sigma[:, t, :]  # LTD condition
         ).double().unsqueeze(1)  # (Batch, in_features, out_features)
 
-        # The case that the input neuron never spikes, but only the latent neuron spikes
-        out_of_window = (
-            1
-            - self.trace_pre_ltp[:, -3 * self.sigma : t, :]
-            .any(dim=1)  # If there is no spike in the last 3 sigma
-            .double()
-        ).unsqueeze(-1) @ (
-            self.trace_oow[:, t, :]  # LTD condition
+        # The case when the input neuron does not spike after the latent neuron
+        post_pre_no_spk = (
+            self.trace_pre_2sigma[:, t + 1 - 2 * self.sigma : t + 1, :].sum(dim=1)
+            == 0  # If there is no spike in the time window
+        ).double().unsqueeze(-1) @ (
+            self.trace_post_2sigma[
+                :, t, :
+            ]  # last spike of the latent neuron before the time window
         ).double().unsqueeze(1)
+
+        # print(
+        #     self.log_likelihood.shape,
+        #     pre_post_ltp.sum(dim=0).shape,
+        #     pre_post_ltd.sum(dim=0).shape,
+        #     post_pre_spk.sum(dim=0).shape,
+        #     post_pre_no_spk.sum(dim=0).shape,
+        # )
 
         dw = (
             (
-                (5 * (-self.log_likelihood).exp() - 1) * post_pre_LTP.mean(dim=0)
-                - post_pre_LTD.mean(dim=0)
-                - pre_post.mean(dim=0)
-                - out_of_window.mean(dim=0)
+                (5 * (-self.log_likelihood).exp() - 1) * pre_post_ltp.sum(dim=0)
+                - pre_post_ltd.sum(dim=0)
+                - post_pre_spk.sum(dim=0)
+                - post_pre_no_spk.sum(dim=0)
             )
             * self.learning_rate
             / self.inverse_lr_decay
@@ -151,8 +171,8 @@ class Nessler2009(Module):
 
         db = (
             (
-                (5 * (-self.log_prior).exp() - 1) * post_spikes.mean(dim=0)
-                - (1 - post_spikes.mean(dim=0))
+                (5 * (-self.log_prior).exp() - 1) * post_spikes.sum(dim=0)
+                - (1 - post_spikes.sum(dim=0))
             )
             * self.learning_rate
             / self.inverse_lr_decay
@@ -176,10 +196,8 @@ class Nessler2009(Module):
         population_form = self.log_likelihood.view(
             self.populations, -1, self.out_features
         )
-        self.log_likelihood -= (
-            population_form.logsumexp(dim=0, keepdim=True)
-            .view(-1, self.out_features)
-            .repeat(2, 1)
-        )
+        self.log_likelihood = (
+            population_form - population_form.logsumexp(dim=0, keepdim=True)
+        ).view(*self.log_likelihood.shape)
         self.log_prior.clamp_(min=-5, max=0)
-        self.log_prior -= self.log_prior.logsumexp(dim=0, keepdim=True)
+        self.log_prior -= self.log_prior.logsumexp(dim=0)
