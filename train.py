@@ -12,14 +12,14 @@ import wandb
 num_steps = 50
 populations = 2
 num_epochs = 1
-batch_size = 1
+batch_size = 32
 num_workers = 4
 feature_map = [0, 3]
 # feature_map = [0, 3, 4]
 # feature_map = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 out_features = len(feature_map)  # 10 classes default
 learning_rate = 1e1
-device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
+device = th.device("cuda:1" if th.cuda.is_available() else "cpu")
 
 wandb.init(
     project="nessler2009",
@@ -61,20 +61,26 @@ if __name__ == "__main__":
             for v in feature_map:
                 mask |= target == v
             data = data[mask, :]
+            target = target[mask]
             if data.shape[0] == 0:
                 continue
-            data = data.view(batch_size, num_steps, -1).to(device)
+            data = data.view(data.shape[0], num_steps, -1).to(device)
             target = target.to(device)
             pred = net(data)
-            ewma = ewma * 0.99 + (target / 3 - pred.float()).abs().mean().item() * 0.01
-            wandb.log({"target-pred": ewma})
+            if len(feature_map) == 2:
+                ewma = (
+                    ewma * 0.99 + (target / 3 - pred.float()).abs().mean().item() * 0.01
+                )
+                wandb.log({"target-pred": ewma})
             if i % 10 == 0:
                 # wandb.log(
                 #     {
                 #         f"img": wandb.Image(
-                #             decode_population(data[0].sum(dim=0).view(2, 28, 28))
+                #             decode_population(
+                #                 data[0].sum(dim=0).view(populations, 28, 28)
+                #             )
                 #         ),
-                #     }0
+                #     }
                 # )
                 for k in range(out_features):
                     log_likelihood_k = net.log_likelihood[:, k]

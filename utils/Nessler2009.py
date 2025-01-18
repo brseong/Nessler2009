@@ -60,7 +60,7 @@ class Nessler2009(Module):
         batch, num_steps, in_features = x.shape
 
         # Simulating the simplified membrane potential
-        potential = x[...].bool()
+        potential = x.clone().bool()
         for t in range(1, self.sigma):
             potential[:, t:, :] |= x[:, :-t, :].bool()
         potential = potential.to(th.uint8)
@@ -91,23 +91,18 @@ class Nessler2009(Module):
         z_total = 0
         for t in range(potential.shape[1]):
             potential_t = potential[:, t, :]  # (Batch, in_features)
-            posterior = th.exp(
+            posterior = (
                 potential_t.double() @ self.log_likelihood + self.log_prior
             ).softmax(dim=1)  # (Batch, out_features)
-            # winners = (
-            #     posterior.softmax(dim=1).multinomial(1).view(potential_t.shape[0])
-            # )  # (Batch, )
-            winners = posterior.bernoulli_()
-            for row in winners:
-                if row.sum() != 0:
-                    row[:] = th.nn.functional.one_hot(
-                        row.softmax(dim=0).multinomial(1), self.out_features
-                    )
-            winners = winners.to(th.uint8)
-
-            # winners = th.nn.functional.one_hot(winners, self.out_features).to(
-            #     th.uint8
-            # )  # (Batch, out_features)
+            winners = (
+                th.distributions.Categorical(posterior)
+                .sample()
+                .view(potential_t.shape[0])
+            )  # (Batch, )
+            z_total += winners.sum().item()
+            winners = th.nn.functional.one_hot(winners, self.out_features).to(
+                th.uint8
+            )  # (Batch, out_features)
             self.trace_pre_sigma[:, t : t + self.sigma, :] += x[
                 :, t : t + 1, :
             ]  # (Batch, sigma, in_features). Broadcast the spike through the time dimension
@@ -125,8 +120,6 @@ class Nessler2009(Module):
 
             self.STDP(x[:, t, :], winners, t)
             pred[:, t, :] = winners
-        # for t in range(potential.shape[1], potential.shape[1] + self.sigma):
-        #     self.STDP(th.zeros_like(x[:, -1, :]), th.zeros_like(winners), t)
         return pred.sum(dim=1).argmax(dim=1)
 
     def STDP(
